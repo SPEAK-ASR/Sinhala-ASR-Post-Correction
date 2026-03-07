@@ -16,3 +16,11 @@ class ModelConfig:
     # Set to True if using mT5 (uses prompt prefix instead of lang tokens)
     use_mt5_prefix: bool = False
     mt5_prefix: str = "correct sinhala asr: "
+
+    # LoRA / PEFT settings
+    use_lora: bool = True
+    lora_r: int = 16          # rank of the low-rank matrices; non-power-of-2 (e.g. 12, 24) is fine
+    lora_alpha: int = 32      # LoRA scaling factor; effective scale = alpha/r.
+                               # 2×r is a common default but NOT universally optimal.
+                               # HPO tunes this via lora_alpha_ratio in tune_hyperparams.py.
+    lora_dropout: float = 0.05

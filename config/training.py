@@ -318,17 +318,20 @@ class TrainingConfig:
     a round multiple of eval_steps if strategy is "steps".
     """
     
-    metric_for_best_model: str | None = "bleu"
+    metric_for_best_model: str | None = "wer"
     """
     Metric to use to compare models with load_best_model_at_end.
     Must be name of metric returned by evaluation with or without "eval_" prefix.
     Defaults to "loss" when load_best_model_at_end == True or lr_scheduler_type == REDUCE_ON_PLATEAU.
+    WER (Word Error Rate) is the canonical ASR evaluation metric and aligns with
+    the HPO objective (also minimises WER). BLEU was previously used here but
+    WER is more directly interpretable for this task.
     """
-    
-    greater_is_better: bool | None = True
+
+    greater_is_better: bool | None = False
     """
     Whether better models should have greater metric (use with load_best_model_at_end).
-    Defaults to True if metric_for_best_model doesn't end in "loss", False otherwise.
+    False because WER is minimised (lower = better).
     """
     
     # ignore_data_skip: bool = False

@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import evaluate as evaluate_lib
 from datasets import DatasetDict
+from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoTokenizer,
     DataCollatorForSeq2Seq,
@@ -72,6 +73,24 @@ class ASRCorrectionTrainer:
         self.model = self.model.to(self.device)
         param_count = sum(p.numel() for p in self.model.parameters()) / 1e6
         logger.info("Model loaded — %.0fM parameters", param_count)
+
+        if CONFIG.model.use_lora:
+            target_modules = ["q_proj", "v_proj"] if self._use_mbart else ["q", "v"]
+            lora_config = LoraConfig(
+                task_type=TaskType.SEQ_2_SEQ_LM,
+                r=CONFIG.model.lora_r,
+                lora_alpha=CONFIG.model.lora_alpha,
+                target_modules=target_modules,
+                lora_dropout=CONFIG.model.lora_dropout,
+                bias="none",
+            )
+            self.model = get_peft_model(self.model, lora_config)
+            trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in self.model.parameters())
+            logger.info(
+                "LoRA applied — trainable: %.2fM / %.0fM (%.2f%%)",
+                trainable / 1e6, total / 1e6, 100 * trainable / total,
+            )
 
     def tokenize(self, dataset: DatasetDict) -> DatasetDict:
         max_in = CONFIG.model.max_input_length
