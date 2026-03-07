@@ -462,7 +462,7 @@ class TrainingConfig:
     """
     
     # Hub Settings
-    push_to_hub: bool = True
+    push_to_hub: bool = False
     """
     Whether to push model to Hub every time model is saved.
     output_dir will be git directory synced with repo (determined by hub_model_id).
@@ -476,14 +476,14 @@ class TrainingConfig:
     Not directly used by Trainer - intended for training/evaluation scripts.
     """
     
-    hub_model_id: str | None = HF_MODEL_ID
+    # hub_model_id: str | None = HF_MODEL_ID
     """
     Name of repository to keep in sync with output_dir.
     Can be simple model ID (pushed in your namespace) or full repo name "user_name/model".
     Defaults to user_name/output_dir_name.
     """
     
-    hub_strategy: transformers.trainer_utils.HubStrategy | str = 'checkpoint'
+    # hub_strategy: transformers.trainer_utils.HubStrategy | str = 'checkpoint'
     """
     Defines scope of what is pushed to Hub and when:
     - "end": Push model, config, tokenizer, and model card on save_model()
