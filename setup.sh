@@ -13,31 +13,42 @@ pip install -r requirements.txt
 echo ""
 echo "─── API Token Setup ────────────────────────────────────────────────────────"
 
-# HuggingFace token
-if [[ -f .env ]] && grep -q "^HF_TOKEN=hf_" .env 2>/dev/null; then
-    echo "[setup] HuggingFace token already set in .env — skipping."
-else
-    echo ""
-    echo "Enter your HuggingFace token (starts with 'hf_')."
-    echo "  → Get one at: https://huggingface.co/settings/tokens"
-    echo "  → Press Enter to skip (needed for private datasets / push to Hub)."
-    read -r -p "HuggingFace token: " HF_TOKEN_INPUT
+# Read existing values from .env as defaults (so Enter keeps them)
+_existing_hf=""
+_existing_wandb=""
+if [[ -f .env ]]; then
+    _existing_hf=$(grep "^HF_TOKEN=" .env | cut -d= -f2- | tr -d '[:space:]')
+    _existing_wandb=$(grep "^WANDB_API_KEY=" .env | cut -d= -f2- | tr -d '[:space:]')
 fi
+# Treat placeholder strings as empty
+[[ "$_existing_hf"    == "hf_your_token_here"    ]] && _existing_hf=""
+[[ "$_existing_wandb" == "your_wandb_key_here"   ]] && _existing_wandb=""
+
+# HuggingFace token
+echo ""
+echo "Enter your HuggingFace token (starts with 'hf_')."
+echo "  → Get one at: https://huggingface.co/settings/tokens"
+if [[ -n "$_existing_hf" ]]; then
+    echo "  → Current value: ${_existing_hf:0:10}…  (press Enter to keep it)"
+else
+    echo "  → Press Enter to skip (needed for private datasets / push to Hub)."
+fi
+read -r -p "HuggingFace token: " HF_TOKEN_INPUT
 
 # Weights & Biases API key
-if [[ -f .env ]] && grep -q "^WANDB_API_KEY=[^y]" .env 2>/dev/null; then
-    echo "[setup] W&B API key already set in .env — skipping."
+echo ""
+echo "Enter your Weights & Biases API key."
+echo "  → Get one at: https://wandb.ai/authorize"
+if [[ -n "$_existing_wandb" ]]; then
+    echo "  → Current value: ${_existing_wandb:0:10}…  (press Enter to keep it)"
 else
-    echo ""
-    echo "Enter your Weights & Biases API key."
-    echo "  → Get one at: https://wandb.ai/authorize"
     echo "  → Press Enter to skip (only needed if use_wandb=True in config/training.py)."
-    read -r -p "W&B API key: " WANDB_KEY_INPUT
 fi
+read -r -p "W&B API key: " WANDB_KEY_INPUT
 
-# Write .env
-HF_TOKEN_VAL="${HF_TOKEN_INPUT:-hf_your_token_here}"
-WANDB_VAL="${WANDB_KEY_INPUT:-your_wandb_key_here}"
+# Resolve final values: user input > existing > placeholder
+HF_TOKEN_VAL="${HF_TOKEN_INPUT:-${_existing_hf:-hf_your_token_here}}"
+WANDB_VAL="${WANDB_KEY_INPUT:-${_existing_wandb:-your_wandb_key_here}}"
 
 cat > .env <<EOF
 # HuggingFace token (needed for private datasets / higher rate limits / push to Hub)
