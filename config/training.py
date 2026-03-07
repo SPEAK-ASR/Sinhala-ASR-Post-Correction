@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+import transformers
 
 @dataclass
 class TrainingConfig:
