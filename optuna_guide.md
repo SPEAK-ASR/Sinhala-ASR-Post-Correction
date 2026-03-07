@@ -32,8 +32,8 @@ studies for the `facebook/mbart-large-50` Seq2Seq post-correction model.
 | HPO engine | Optuna — TPESampler + NopPruner |
 | Storage | `JournalStorage(JournalFileBackend)` — crash-safe, multi-process |
 | Objective | Minimise **WER** (Word Error Rate) after 1 training epoch |
-| Scripts | `tune_hyperparams.py` (Python) · `tune.sh` (GPU launcher) |
-| Outputs | `optuna_results/journal.log` · `optuna_results/plots/*.html` |
+| Scripts | `tune_hyperparams.py` (Python) · `run_optuna_parallel.sh` (GPU launcher) |
+| Outputs | `optuna_results/journal.log` · `optuna_results/plots/*.html` · `logs/*.log` |
 
 Each trial trains for **exactly 1 epoch** and reports its validation WER as the
 objective. A 1-epoch proxy is fast enough to rank configurations reliably, and
@@ -79,8 +79,8 @@ Required packages (from `requirements.txt`):
 | 9 | `gradient_accumulation_steps` | categorical | 1, 2, 4 | Effective batch = batch × GAS |
 | 10 | `neftune_noise_alpha` | categorical | None, 5.0, 10.0, 15.0 | NEFTune embedding noise |
 | 11 | `label_smoothing_factor` | categorical | 0.0, 0.05, 0.1, 0.2 | Cross-entropy label smoothing |
-| 12 | `lora_r` | categorical | 4, 6, 8, 12, 16, 24, 32 | LoRA matrix rank |
-| 13 | `lora_alpha_ratio` | categorical | 0.5, 1.0, 2.0, 4.0 | LoRA scaling (alpha = ratio × r) |
+| 12 | `lora_r` | int | [8, 256] | LoRA matrix rank (continuous integer) |
+| 13 | `lora_alpha_ratio` | float | [0.5, 4.0] | LoRA scaling (alpha = ratio × r) |
 | 14 | `lora_dropout` | float | [0.0, 0.2] | LoRA adapter dropout |
 
 **Effective batch size** = `per_device_train_batch_size × gradient_accumulation_steps × n_gpus`
@@ -92,21 +92,24 @@ multivariate TPE activates.
 
 ## 4. LoRA Rank & Alpha Deep Dive
 
-### Why not restrict to powers-of-2?
+### Why use a continuous integer range for `lora_r`?
 
 LoRA rank (`r`) controls the size of the two low-rank matrices injected into each
-attention layer. Mathematically, any positive integer works. Powers-of-2 (4, 8, 16…)
-are a *convenience convention*, not a hardware requirement. CUDA tensor cores align on
-multiples of 8 for performance, but the weight-update computation with PEFT LoRA is
-dominated by forward/backward passes through the base model, not the adapter matrices.
+attention layer. The search space is `("int", 8, 256)` — a **continuous integer
+range** that lets TPE discover the optimal rank freely rather than being confined
+to a fixed list of candidates.
 
-Including `r ∈ {4, 6, 8, 12, 16, 24, 32}` gives TPE finer granularity to find the
-optimal capacity/efficiency trade-off.
+Powers-of-2 (8, 16, 32…) are a *convenience convention*, not a hardware requirement.
+CUDA tensor cores align on multiples of 8 for performance, but the weight-update
+computation with PEFT LoRA is dominated by forward/backward passes through the base
+model, not the adapter matrices. By searching the full range `[8, 256]`, TPE can
+find fine-grained optima like `r=47` or `r=130` that a hand-picked list would miss.
 
-### Why not hardcode `lora_alpha = 2 × lora_r`?
+### Why use a continuous float for `lora_alpha_ratio`?
 
-The effective LoRA scaling multiplier is `alpha / r`. Fixing `alpha = 2r` means the
-scaling is always 2.0, regardless of `r`. But this is simply *one popular default*:
+`lora_alpha_ratio` is sampled from `("float", 0.5, 4.0)`. The effective LoRA
+scaling multiplier is `alpha / r`. Fixing `alpha = 2r` means the scaling is always
+2.0, regardless of `r`. But this is simply *one popular default*:
 
 | `lora_alpha_ratio` | Effective scaling (alpha/r) | Interpretation |
 |--------------------|----------------------------|----------------|
@@ -115,10 +118,11 @@ scaling is always 2.0, regardless of `r`. But this is simply *one popular defaul
 | 2.0 | 2.0 | "Double the LR" convention (HuggingFace default) |
 | 4.0 | 4.0 | Aggressive — adapter weights dominate updates |
 
+Using a continuous range (rather than a fixed list) allows TPE to discover
+intermediate values like `ratio=1.7` that categorical sampling would never reach.
 The best value depends on the base model, task difficulty, and rank. By tuning
 `lora_alpha_ratio` independently from `lora_r`, TPE can discover combinations like
-`r=8, ratio=4.0` (high scaling, low rank) vs `r=24, ratio=0.5` (high rank, low
-scaling) that fixed conventions would never explore.
+`r=48, ratio=3.2` vs `r=200, ratio=0.6` that fixed conventions would never explore.
 
 The actual integer alpha used in each trial is computed as:
 ```python
@@ -162,23 +166,23 @@ can switch to `HyperbandPruner(min_resource=1, max_resource=N, reduction_factor=
 
 ## 6. Quick Start Commands
 
-### Single GPU, fresh study (50 trials)
+### Single GPU, fresh study (50 trials, 1 worker)
 ```bash
 python tune_hyperparams.py --gpu-id 0 --n-trials 50
 ```
 
 ### Single GPU, verbose logging
 ```bash
-python tune_hyperparams.py --gpu-id 0 --n-trials 50 2>&1 | tee optuna_results/gpu_0.log
+python tune_hyperparams.py --gpu-id 0 --n-trials 50 2>&1 | tee logs/gpu_0.log
 ```
 
-### Use `tune.sh` (auto-detects GPUs, recommended)
+### Use `run_optuna_parallel.sh` (recommended — auto-detects GPUs)
 ```bash
-# Auto-detect all GPUs, 50 trials each, workers=1 (safe for mbart)
-bash tune.sh
+# Auto-detect all GPUs, 50 total trials shared across workers
+bash run_optuna_parallel.sh 50
 
-# Specify trial count
-bash tune.sh --n-trials 100
+# Specify worker count (e.g. 4 workers on a 192 GB MI300X)
+bash run_optuna_parallel.sh 50 --workers 4
 
 # Run on CPU only (for testing / debugging)
 python tune_hyperparams.py --gpu-id cpu --n-trials 3
@@ -193,35 +197,56 @@ python tune_hyperparams.py --gpu-id 0 --n-trials 2
 
 ## 7. Multi-GPU Usage
 
-`tune.sh` detects all NVIDIA GPUs and spawns one Python process per GPU.
-All processes share the same `journal.log`, so Optuna coordinates trial
-assignments with no duplicate work.
+`run_optuna_parallel.sh` detects all NVIDIA and AMD (ROCm) GPUs and distributes
+workers round-robin across devices. All workers share the same `journal.log`, so
+Optuna coordinates trial assignments with no duplicate work. Workers are fully
+detached (`setsid nohup`) and survive terminal closure.
 
 ```bash
-# 4 GPUs, 50 trials each = 200 total trials
-bash tune.sh --n-trials 50
+# 4 total workers across available GPUs, 200 total trials (50 per worker)
+bash run_optuna_parallel.sh 200 --workers 4
 
 # Verify GPU assignment
-nvidia-smi --list-gpus
+nvidia-smi --list-gpus      # CUDA
+# or
+rocm-smi --showuniqueid     # ROCm / AMD
 ```
+
+**`--workers` is the total number of background workers** — they are assigned
+round-robin: worker 0 → GPU 0, worker 1 → GPU 1, …, worker N → GPU (N % GPU_COUNT).
+The script divides `TOTAL_TRIALS` evenly: each worker runs
+`ceil(TOTAL_TRIALS / TOTAL_WORKERS)` trials.
 
 **workers=1 (default) is strongly recommended for mbart-large-50** — the model
 requires ~11 GB VRAM per trial, leaving no room for concurrent trials on a 24 GB
-GPU. Only increase workers on A100/H100 (80 GB) with a smaller model (e.g. mT5-small):
+GPU. Only increase workers on A100/H100 (80 GB) or MI300X (192 GB) with sufficient
+VRAM headroom:
 
 ```bash
-# Only on A100/H100 with mt5-small (~300 MB VRAM per trial)
-bash tune.sh --workers 4 --n-trials 30
+# MI300X (192 GB) with ~40 GB per trial → 4 concurrent workers
+bash run_optuna_parallel.sh 100 --workers 4
+
+# 2 GPUs, 1 worker each (default behaviour)
+bash run_optuna_parallel.sh 50
 ```
 
-To completely override the `n_jobs` passed to `study.optimize()`:
+To stop all background workers at any time:
 ```bash
-bash tune.sh --n-jobs 2 --n-trials 50
+bash stop_optuna.sh
+```
+
+### Monitor worker output
+```bash
+# Live log for worker 0 on GPU 0
+tail -f logs/optuna_worker0_gpu0.log
+
+# Check which workers are still running
+ps -p $(paste -sd, logs/optuna_workers.pid)
 ```
 
 ### Manually launching per-GPU processes
 
-If you prefer not to use `tune.sh`:
+If you prefer not to use `run_optuna_parallel.sh`:
 ```bash
 # GPU 0
 CUDA_VISIBLE_DEVICES=0 python tune_hyperparams.py \
@@ -242,16 +267,20 @@ The `JournalFileBackend` is append-only, so every completed trial is persisted
 immediately. If a run is interrupted (OOM, cluster preemption, `Ctrl+C`):
 
 ```bash
-# Resume from where it left off
-bash tune.sh --resume --n-trials 50
+# Resume from where it left off (parallel launcher)
+bash run_optuna_parallel.sh 50 --resume
 
-# Or directly
+# Or, resume directly with the Python script
 python tune_hyperparams.py --gpu-id 0 --n-trials 50 --resume
 ```
 
 With `--resume`, Optuna loads the existing study (`load_if_exists=True`) and
 issues only the remaining `--n-trials` trials. Already-completed trials are
 not re-run.
+
+> **Note**: When using `run_optuna_parallel.sh` without `--resume`, the script
+> prompts before overwriting an existing `journal.log`. Pass `--resume` to skip
+> the prompt and preserve prior progress.
 
 ### Inspecting the journal
 ```bash
@@ -382,13 +411,15 @@ python main.py
 
 ### `CUDA out of memory` during a trial
 - Reduce `per_device_train_batch_size` in `SEARCH_SPACE` (remove 32, keep 8/16)
-- Set `workers=1` (default): `bash tune.sh --workers 1`
+- Use the default `workers=1`: `bash run_optuna_parallel.sh 50` (no `--workers` flag)
 - Enable `auto_find_batch_size=True` in `objective()` as a last resort
 
 ### `optuna.exceptions.DuplicatedStudyError`
 You're running a fresh study when one already exists in the journal. Use `--resume`:
 ```bash
 python tune_hyperparams.py --gpu-id 0 --n-trials 50 --resume
+# or, with the parallel launcher:
+bash run_optuna_parallel.sh 50 --resume
 ```
 Or change `--study-name` to start fresh.
 
@@ -431,7 +462,7 @@ usage: tune_hyperparams.py [-h] [--gpu-id GPU_ID] [--workers WORKERS]
 Flags:
   --gpu-id GPU_ID               GPU index for CUDA_VISIBLE_DEVICES, or 'cpu'
                                 Default: 0
-  --workers WORKERS             Parallel trials per GPU (n_jobs for study.optimize).
+  --workers WORKERS             Parallel trials per GPU process (n_jobs for study.optimize).
                                 Default: 1  (recommended for mbart-large-50)
   --n-trials N_TRIALS           Trials to run in this process.
                                 Default: 50
@@ -448,21 +479,30 @@ Flags:
                                 Default: optuna_results/plots
 ```
 
-### `tune.sh`
+### `run_optuna_parallel.sh`
 
 ```
-usage: bash tune.sh [OPTIONS]
+usage: bash run_optuna_parallel.sh [TOTAL_TRIALS] [OPTIONS]
+
+Positional:
+  TOTAL_TRIALS          Total trials to distribute across all workers.
+                        Default: 50
 
 Options:
-  --resume               Load existing study from journal file.
-  --workers N            Parallel trials per GPU process. Default: 1
-  --n-jobs N             Override n_jobs passed to study.optimize().
-  --n-trials N           Trials per GPU process. Default: 50
-  --study-name NAME      Optuna study name. Default: sinhala_asr_hpo
-  --journal-file PATH    JournalStorage file. Default: optuna_results/journal.log
-  --plot-dir PATH        Plotly HTML output directory.
-                         Default: optuna_results/plots
-  -h / --help            Show this help message.
+  --resume              Resume existing study (load_if_exists=True).
+                        Skips the overwrite-journal prompt.
+  --workers N           Total number of parallel background workers.
+                        Distributed round-robin across detected GPUs.
+                        Default: auto (one worker per GPU).
+  -h / --help           Show usage.
+
+Notes:
+  - Detects NVIDIA GPUs via nvidia-smi and AMD GPUs via rocm-smi.
+  - Workers are launched with setsid nohup — survive terminal closure.
+  - Each worker runs ceil(TOTAL_TRIALS / TOTAL_WORKERS) trials.
+  - PID file: logs/optuna_workers.pid
+  - Per-worker logs: logs/optuna_worker<N>_gpu<ID>.log
+  - Stop all workers: bash stop_optuna.sh
 ```
 
 ### Common recipes
@@ -471,14 +511,18 @@ Options:
 # Fresh study, single GPU
 python tune_hyperparams.py --gpu-id 0 --n-trials 50
 
-# Fresh study, all GPUs (auto-detect)
-bash tune.sh --n-trials 50
+# Fresh study, all GPUs (auto-detect, 1 worker per GPU)
+bash run_optuna_parallel.sh 50
+
+# 4 workers across available GPUs, 200 total trials
+bash run_optuna_parallel.sh 200 --workers 4
 
 # Resume after interruption
-bash tune.sh --resume --n-trials 50
+bash run_optuna_parallel.sh 50 --resume
 
 # Resume with custom journal
-bash tune.sh --resume --journal-file optuna_results/run2/journal.log --n-trials 30
+python tune_hyperparams.py --gpu-id 0 --n-trials 30 --resume \
+    --journal-file optuna_results/run2/journal.log
 
 # Only generate plots (no training)
 python tune_hyperparams.py --visualize
@@ -497,13 +541,16 @@ for k,v in study.best_params.items(): print(f'  {k}: {v}')
 # Run a quick sanity check (2 trials, CPU)
 python tune_hyperparams.py --gpu-id cpu --n-trials 2 --study-name sanity_check
 
-# Start a completely new study (don't overwrite old journal)
+# Start a completely new study (separate journal)
 python tune_hyperparams.py --gpu-id 0 --n-trials 50 \
     --study-name sinhala_asr_hpo_v2 \
     --journal-file optuna_results/journal_v2.log
 
-# Multi-GPU with 100 trials each, verbose logs per GPU
-bash tune.sh --n-trials 100 --resume 2>&1
+# Monitor live progress
+tail -f logs/optuna_worker0_gpu0.log
+
+# Stop all background workers
+bash stop_optuna.sh
 ```
 
 ---
@@ -518,18 +565,22 @@ optuna_results/
 │   ├── trial_0000/          ← per-trial output_dir (no checkpoints saved)
 │   ├── trial_0001/
 │   └── ...
-├── plots/
-│   ├── optimization_history.html
-│   ├── param_importances.html
-│   ├── parallel_coordinate.html
-│   ├── contour.html
-│   ├── slice.html
-│   ├── intermediate_values.html
-│   ├── edf.html
-│   ├── rank.html
-│   ├── timeline.html
-│   ├── duration_importances.html
-│   └── best_params.txt      ← plain-text best hyperparameter summary
-├── gpu_0.log                ← stdout/stderr for GPU 0 process
-└── gpu_1.log                ← stdout/stderr for GPU 1 process
+└── plots/
+    ├── optimization_history.html
+    ├── param_importances.html
+    ├── parallel_coordinate.html
+    ├── contour.html
+    ├── slice.html
+    ├── intermediate_values.html
+    ├── edf.html
+    ├── rank.html
+    ├── timeline.html
+    ├── duration_importances.html
+    └── best_params.txt      ← plain-text best hyperparameter summary
+
+logs/
+├── optuna_workers.pid       ← PIDs of all background workers
+├── optuna_worker0_gpu0.log  ← stdout/stderr for worker 0 on GPU 0
+├── optuna_worker1_gpu1.log  ← stdout/stderr for worker 1 on GPU 1
+└── ...
 ```
