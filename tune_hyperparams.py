@@ -328,7 +328,7 @@ def objective(trial: optuna.Trial) -> float:
         logging_first_step=False,
         dataloader_num_workers=CONFIG.training.dataloader_num_workers,
         dataloader_prefetch_factor=CONFIG.training.dataloader_prefetch_factor,
-        dataloader_pin_memory=CONFIG.training.dataloader_pin_memory,
+        dataloader_pin_memory=CONFIG.training.dataloader_pin_memory and (_DEVICE == "cuda"),
         dataloader_persistent_workers=CONFIG.training.dataloader_persistent_workers,
         optim=CONFIG.training.optim,
         seed=CONFIG.training.seed,

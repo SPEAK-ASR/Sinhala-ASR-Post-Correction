@@ -28,8 +28,52 @@
 # Workers run fully detached (survive terminal close).
 # Stop all workers : bash stop_optuna.sh
 # Monitor progress : tail -f logs/optuna_worker0_gpu0.log
+#
+# NOTE – GPU prerequisite:
+#   Workers fall back to CPU if torch was installed without CUDA/ROCm support.
+#   If you see "Process device: cpu" in the logs, re-install torch on the
+#   cloud instance with the correct compute backend, e.g.:
+#     # CUDA 12.x (NVIDIA):
+#     pip install torch --index-url https://download.pytorch.org/whl/cu121
+#     # ROCm 6.x (AMD):
+#     pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
+#   Then verify:  python3 -c "import torch; print(torch.cuda.is_available())"
 # ---------------------------------------------------------------------------
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Preflight: abort early if torch cannot see a GPU.
+# This prevents silently running an expensive HPO study on CPU.
+# ---------------------------------------------------------------------------
+PYTHON_BIN="${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python3}"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
+
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "ERROR: python3 not found. Activate the venv first."
+    exit 1
+fi
+
+CUDA_OK=$("$PYTHON_BIN" -c "import torch; print(int(torch.cuda.is_available()))" 2>/dev/null || echo "0")
+if [[ "$CUDA_OK" != "1" ]]; then
+    echo "============================================================"
+    echo " ERROR: torch.cuda.is_available() = False"
+    echo ""
+    echo " torch was installed without CUDA/ROCm support (CPU-only wheel)."
+    echo " Training mBART on CPU is impractically slow — aborting."
+    echo ""
+    echo " Fix (on the cloud instance):"
+    echo "   # CUDA 12.x (NVIDIA driver ≥ 525):"
+    echo "   pip install torch --index-url https://download.pytorch.org/whl/cu121"
+    echo "   # CUDA 11.8 (older NVIDIA driver):"
+    echo "   pip install torch --index-url https://download.pytorch.org/whl/cu118"
+    echo "   # ROCm 6.x (AMD):"
+    echo "   pip install torch --index-url https://download.pytorch.org/whl/rocm6.0"
+    echo ""
+    echo " Then verify:"
+    echo "   python3 -c \"import torch; print(torch.cuda.is_available())\""
+    echo "============================================================"
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Argument parsing
