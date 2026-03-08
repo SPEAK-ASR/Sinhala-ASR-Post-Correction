@@ -136,10 +136,11 @@ fi
 # ---------------------------------------------------------------------------
 # Build shared flags for tune_hyperparams.py
 # ---------------------------------------------------------------------------
-RESUME_FLAG=""
-if [[ "$RESUME" == true ]]; then
-    RESUME_FLAG="--resume"
-fi
+# Workers always receive --resume so load_if_exists=True, which prevents a
+# race condition where workers 1+ crash trying to create a study that worker 0
+# already created in the same run. Freshness is already guaranteed above:
+# a non-resume run deleted the journal, so the study truly doesn't exist yet.
+RESUME_FLAG="--resume"
 
 # ---------------------------------------------------------------------------
 # Launch workers
